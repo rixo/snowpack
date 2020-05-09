@@ -1,0 +1,310 @@
+import path from 'path';
+import fs from 'fs';
+import { cosmiconfigSync } from 'cosmiconfig';
+import { validate } from 'jsonschema';
+import { all as merge } from 'deepmerge';
+import chalk from 'chalk';
+const CONFIG_NAME = 'snowpack';
+// default settings
+const DEFAULT_CONFIG = {
+    exclude: ['__tests__/*', '**/*.@(spec|test).*'],
+    knownEntrypoints: [],
+    installOptions: {
+        clean: false,
+        dest: 'web_modules',
+        externalPackage: [],
+        installTypes: false,
+        env: {},
+        alias: {},
+    },
+    devOptions: {
+        port: 8080,
+        out: 'build',
+        dist: '/_dist_',
+        fallback: 'index.html',
+        bundle: false,
+        hot: false,
+    },
+    rollup: {
+        plugins: [],
+        dedupe: [],
+    },
+};
+const configSchema = {
+    type: 'object',
+    properties: {
+        extends: { type: 'string' },
+        knownEntrypoints: { type: 'array', items: { type: 'string' } },
+        include: { type: 'string' },
+        exclude: { type: 'array', items: { type: 'string' } },
+        webDependencies: {
+            type: ['object'],
+            additionalProperties: { type: 'string' },
+        },
+        installOptions: {
+            type: 'object',
+            properties: {
+                clean: { type: 'boolean' },
+                dest: { type: 'string' },
+                externalPackage: { type: 'array', items: { type: 'string' } },
+                installTypes: { type: 'boolean' },
+                sourceMap: { oneOf: [{ type: 'boolean' }, { type: 'string' }] },
+                alias: {
+                    type: 'object',
+                    additionalProperties: { type: 'string' },
+                },
+                env: {
+                    type: 'object',
+                    additionalProperties: {
+                        oneOf: [
+                            { id: 'EnvVarString', type: 'string' },
+                            { id: 'EnvVarNumber', type: 'number' },
+                            { id: 'EnvVarTrue', type: 'boolean', enum: [true] },
+                        ],
+                    },
+                },
+            },
+        },
+        devOptions: {
+            type: 'object',
+            properties: {
+                port: { type: 'number' },
+                out: { type: 'string' },
+                dist: { type: 'string' },
+                fallback: { type: 'string' },
+                bundle: { type: 'boolean' },
+                hot: { type: 'boolean' },
+            },
+        },
+        scripts: {
+            type: 'object',
+            additionalProperties: { type: ['string'] },
+        },
+        rollup: {
+            type: 'object',
+            properties: {
+                plugins: { type: 'array', items: { type: 'object' } },
+                dedupe: {
+                    type: 'array',
+                    items: { type: 'string' },
+                },
+                namedExports: {
+                    type: 'object',
+                    additionalProperties: { type: 'array', items: { type: 'string' } },
+                },
+            },
+        },
+    },
+};
+/**
+ * Convert CLI flags to an incomplete Snowpack config representation.
+ * We need to be careful about setting properties here if the flag value
+ * is undefined, since the deep merge strategy would then overwrite good
+ * defaults with 'undefined'.
+ */
+function expandCliFlags(flags) {
+    const result = {
+        installOptions: {},
+        devOptions: {},
+    };
+    const { help, version, config, ...relevantFlags } = flags;
+    for (const [flag, val] of Object.entries(relevantFlags)) {
+        if (flag === '_' || flag.includes('-')) {
+            continue;
+        }
+        if (configSchema.properties[flag]) {
+            result[flag] = val;
+            continue;
+        }
+        if (configSchema.properties.installOptions.properties[flag]) {
+            result.installOptions[flag] = val;
+            continue;
+        }
+        if (configSchema.properties.devOptions.properties[flag]) {
+            result.devOptions[flag] = val;
+            continue;
+        }
+        console.error(`Unknown CLI flag: "${flag}"`);
+        process.exit(1);
+    }
+    if (result.installOptions.env) {
+        result.installOptions.env = result.installOptions.env.reduce((acc, id) => {
+            const index = id.indexOf('=');
+            const [key, val] = index > 0 ? [id.substr(0, index), id.substr(index + 1)] : [id, true];
+            acc[key] = val;
+            return acc;
+        }, {});
+    }
+    return result;
+}
+/** resolve --dest relative to cwd, etc. */
+function normalizeConfig(config) {
+    const cwd = process.cwd();
+    if (config.include) {
+        config.include = path.resolve(cwd, config.include);
+    }
+    else {
+        const potentialIncludeDir = path.resolve(cwd, 'src');
+        if (fs.existsSync(potentialIncludeDir)) {
+            config.include = potentialIncludeDir;
+        }
+    }
+    config.installOptions.dest = path.resolve(cwd, config.installOptions.dest);
+    config.devOptions.out = path.resolve(cwd, config.devOptions.out);
+    const scriptsBase = {
+        'mount:web_modules': 'mount web_modules',
+    };
+    if (!config.scripts) {
+        scriptsBase['mount:/'] = 'mount . --to /';
+    }
+    else if (fs.existsSync(path.resolve(cwd, 'public'))) {
+        scriptsBase['mount:public'] = scriptsBase['mount:public'] || 'mount public --to /';
+    }
+    // @ts-ignore
+    config.scripts = {
+        ...scriptsBase,
+        ...config.scripts,
+    };
+    for (const scriptId of Object.keys(config.scripts)) {
+        if (scriptId.includes('::watch')) {
+            continue;
+        }
+        config.scripts[scriptId] = {
+            cmd: config.scripts[scriptId],
+            watch: config.scripts[`${scriptId}::watch`],
+        };
+    }
+    for (const scriptId of Object.keys(config.scripts)) {
+        if (scriptId.includes('::watch')) {
+            delete config.scripts[scriptId];
+        }
+    }
+    return config;
+}
+function handleConfigError(msg) {
+    console.error(`[error]: ${msg}`);
+    process.exit(1);
+}
+function handleValidationErrors(filepath, errors) {
+    console.error(chalk.red(`! ${filepath || 'Configuration error'}`));
+    console.error(errors.map((err) => `    - ${err.toString()}`).join('\n'));
+    console.error(`    See https://www.snowpack.dev/#configuration for more info.`);
+    process.exit(1);
+}
+function handleDeprecatedConfigError(msg) {
+    console.error(chalk.red(msg));
+    console.error(`See https://www.snowpack.dev/#configuration for more info.`);
+    process.exit(1);
+}
+function validateConfigAgainstV1(rawConfig, cliFlags) {
+    // Moved!
+    if (rawConfig.dedupe || cliFlags.dedupe) {
+        handleDeprecatedConfigError('[Snowpack v1 -> v2] `dedupe` is now `rollup.dedupe`.');
+    }
+    if (rawConfig.namedExports || cliFlags.namedExports) {
+        handleDeprecatedConfigError('[Snowpack v1 -> v2] `namedExports` is now `rollup.namedExports`.');
+    }
+    if (rawConfig.installOptions?.include) {
+        handleDeprecatedConfigError('[Snowpack v1 -> v2] `installOptions.include` is now `include` but its syntax has also changed!');
+    }
+    if (rawConfig.installOptions?.exclude) {
+        handleDeprecatedConfigError('[Snowpack v1 -> v2] `installOptions.exclude` is now `exclude`.');
+    }
+    if (Array.isArray(rawConfig.webDependencies)) {
+        handleDeprecatedConfigError('[Snowpack v1 -> v2] The `webDependencies` array is now `knownEntrypoints`.');
+    }
+    if (rawConfig.entrypoints) {
+        handleDeprecatedConfigError('[Snowpack v1 -> v2] `entrypoints` is now `knownEntrypoints`.');
+    }
+    // Replaced!
+    if (rawConfig.source || cliFlags.source) {
+        handleDeprecatedConfigError('[Snowpack v1 -> v2] `source` is now detected automatically, this config is safe to remove.');
+    }
+    if (rawConfig.stat || cliFlags.stat) {
+        handleDeprecatedConfigError('[Snowpack v1 -> v2] `stat` is now the default output, this config is safe to remove.');
+    }
+    // Removed!
+    if (rawConfig.hash || cliFlags.hash) {
+        handleDeprecatedConfigError('[Snowpack v1 -> v2] `installOptions.hash` has been replaced by `snowpack build`.');
+    }
+    if (rawConfig.installOptions?.nomodule || cliFlags.nomodule) {
+        handleDeprecatedConfigError('[Snowpack v1 -> v2] `installOptions.nomodule` has been replaced by `snowpack build --bundle`.');
+    }
+    if (rawConfig.installOptions?.nomoduleOutput || cliFlags.nomoduleOutput) {
+        handleDeprecatedConfigError('[Snowpack v1 -> v2] `installOptions.nomoduleOutput` has been replaced by `snowpack build --bundle`.');
+    }
+    if (rawConfig.installOptions?.babel || cliFlags.babel) {
+        handleDeprecatedConfigError('[Snowpack v1 -> v2] `installOptions.babel` has been replaced by `snowpack build --bundle`.');
+    }
+    if (rawConfig.installOptions?.optimize || cliFlags.optimize) {
+        handleDeprecatedConfigError('[Snowpack v1 -> v2] `installOptions.optimize` has been replaced by `snowpack build --bundle`.');
+    }
+    if (rawConfig.installOptions?.strict || cliFlags.strict) {
+        handleDeprecatedConfigError('[Snowpack v1 -> v2] `installOptions.strict` is no longer supported.');
+    }
+}
+export function loadAndValidateConfig(flags, pkgManifest) {
+    const explorerSync = cosmiconfigSync(CONFIG_NAME, {
+        // only support these 3 types of config for now
+        searchPlaces: ['package.json', 'snowpack.config.js', 'snowpack.config.json'],
+        // don't support crawling up the folder tree:
+        stopDir: path.dirname(process.cwd()),
+    });
+    let result;
+    // if user specified --config path, load that
+    if (flags.config) {
+        result = explorerSync.load(path.resolve(process.cwd(), flags.config));
+        if (!result) {
+            handleConfigError(`Could not locate Snowpack config at ${flags.config}`);
+        }
+    }
+    // If no config was found above, search for one.
+    result = result || explorerSync.search();
+    // If still no config found, assume none exists and use the default config.
+    if (!result || !result.config || result.isEmpty) {
+        result = { config: { ...DEFAULT_CONFIG } };
+    }
+    // validate against schema; throw helpful user if invalid
+    const config = result.config;
+    const cliConfig = expandCliFlags(flags);
+    validateConfigAgainstV1(result.config, flags);
+    const validation = validate(config, configSchema, {
+        allowUnknownAttributes: false,
+        propertyName: CONFIG_NAME,
+    });
+    if (validation.errors && validation.errors.length > 0) {
+        handleValidationErrors(result.filepath, validation.errors);
+        process.exit(1);
+    }
+    let extendConfig = {};
+    if (config.extends) {
+        const extendConfigLoc = config.extends.startsWith('.')
+            ? path.resolve(path.dirname(result.filepath), config.extends)
+            : require.resolve(config.extends, { paths: [process.cwd()] });
+        const extendResult = explorerSync.load(extendConfigLoc);
+        if (!extendResult) {
+            handleConfigError(`Could not locate Snowpack config at ${flags.config}`);
+            process.exit(1);
+        }
+        extendConfig = extendResult.config;
+        const extendValidation = validate(extendConfig, configSchema, {
+            allowUnknownAttributes: false,
+            propertyName: CONFIG_NAME,
+        });
+        if (extendValidation.errors && extendValidation.errors.length > 0) {
+            handleValidationErrors(result.filepath, extendValidation.errors);
+            process.exit(1);
+        }
+    }
+    // if valid, apply config over defaults
+    const overwriteMerge = (destinationArray, sourceArray, options) => sourceArray;
+    const mergedConfig = merge([
+        DEFAULT_CONFIG,
+        extendConfig,
+        { webDependencies: pkgManifest.webDependencies },
+        config,
+        cliConfig,
+    ], { arrayMerge: overwriteMerge });
+    // if CLI flags present, apply those as overrides
+    return normalizeConfig(mergedConfig);
+}
