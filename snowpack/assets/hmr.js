@@ -20,7 +20,9 @@ function sendSocketMessage(msg) {
     _sendSocketMessage(msg);
   }
 }
-const socketURL = typeof window !== 'undefined' &&  window.HMR_WEBSOCKET_URL || (location.protocol === 'http:' ? 'ws://' : 'wss://') + location.host + '/';
+const socketURL =
+  (typeof window !== 'undefined' && window.HMR_WEBSOCKET_URL) ||
+  (location.protocol === 'http:' ? 'ws://' : 'wss://') + location.host + '/';
 
 const socket = new WebSocket(socketURL, 'esm-hmr');
 socket.addEventListener('open', () => {
@@ -55,7 +57,8 @@ class HotModuleState {
       return;
     }
     if (!this.isAccepted) {
-      sendSocketMessage({id: this.id, type: 'hotAccept'});
+      // FIXME extension mismatch
+      sendSocketMessage({id: this.id.replace(/\.svelte\.js$/, '.js'), type: 'hotAccept'});
       this.isAccepted = true;
     }
     if (!Array.isArray(_deps)) {
@@ -82,7 +85,8 @@ class HotModuleState {
 }
 export function createHotContext(fullUrl) {
   const id = new URL(fullUrl).pathname;
-  const existing = REGISTERED_MODULES[id];
+  // FIXME extension mismatch
+  const existing = REGISTERED_MODULES[id] || REGISTERED_MODULES[id.replace(/\.js$/, '.svelte.js')];
   if (existing) {
     existing.lock();
     runModuleDispose(id);
@@ -95,7 +99,8 @@ export function createHotContext(fullUrl) {
 
 /** Called when a new module is loaded, to pass the updated module to the "active" module */
 async function runModuleAccept(id) {
-  const state = REGISTERED_MODULES[id];
+  // FIXME extension mismatch
+  const state = REGISTERED_MODULES[id] || REGISTERED_MODULES[id.replace(/\.js$/, '.svelte.js')];
   if (!state) {
     return false;
   }
@@ -116,7 +121,8 @@ async function runModuleAccept(id) {
 
 /** Called when a new module is loaded, to run cleanup on the old module (if needed) */
 async function runModuleDispose(id) {
-  const state = REGISTERED_MODULES[id];
+  // FIXME extension mismatch
+  const state = REGISTERED_MODULES[id] || REGISTERED_MODULES[id.replace(/\.js$/, '.svelte.js')];
   if (!state) {
     return false;
   }

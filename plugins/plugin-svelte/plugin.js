@@ -2,6 +2,9 @@ const svelte = require('svelte/compiler');
 const svelteRollupPlugin = require('rollup-plugin-svelte');
 const fs = require('fs');
 const path = require('path');
+const {createMakeHot} = require('svelte-hmr');
+
+const makeHot = createMakeHot({walk: svelte.walk});
 
 module.exports = function plugin(snowpackConfig, pluginOptions = {}) {
   // Support importing Svelte files when you install dependencies.
@@ -33,9 +36,20 @@ module.exports = function plugin(snowpackConfig, pluginOptions = {}) {
       input: ['.svelte'],
       output: ['.js', '.css'],
     },
-    knownEntrypoints: ['svelte/internal'],
-    async load({filePath, isSSR}) {
-      let codeToCompile = fs.readFileSync(filePath, 'utf-8');
+    knownEntrypoints: [
+      'svelte/internal',
+      'svelte/store',
+      'svelte/easing',
+      'svelte/motion',
+      'svelte/transition',
+      'svelte/animate',
+      'svelte-hmr/runtime/hot-api-esm.js',
+      'svelte-hmr/runtime/proxy-adapter-dom.js',
+    ],
+    async load({filePath, isHmrEnabled, isSSR}) {
+      debugger;
+
+      let codeToCompile = await fs.promises.readFile(filePath, 'utf-8');
       // PRE-PROCESS
       if (preprocessOptions) {
         codeToCompile = (
@@ -51,12 +65,16 @@ module.exports = function plugin(snowpackConfig, pluginOptions = {}) {
         ssrOptions.css = true;
       }
 
-      const {js, css} = svelte.compile(codeToCompile, {
+      const compileOptions = {
         ...svelteOptions,
         ...ssrOptions,
         outputFilename: filePath,
         filename: filePath,
-      });
+      };
+
+      const compiled = svelte.compile(codeToCompile, compileOptions);
+
+      const {js, css} = compiled;
 
       const {sourceMaps} = snowpackConfig.buildOptions;
       const output = {
@@ -65,6 +83,21 @@ module.exports = function plugin(snowpackConfig, pluginOptions = {}) {
           map: sourceMaps ? js.map : undefined,
         },
       };
+
+      if (isHmrEnabled && !isSSR) {
+        const hotOptions = {
+          absoluteImports: false,
+        };
+        output['.js'].code = makeHot({
+          id: filePath,
+          compiledCode: compiled.js.code,
+          hotOptions,
+          compiled,
+          originalCode: codeToCompile,
+          compileOptions,
+        });
+      }
+
       if (!svelteOptions.css && css && css.code) {
         output['.css'] = {
           code: css.code,

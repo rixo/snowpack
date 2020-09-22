@@ -92,7 +92,7 @@ const DEFAULT_PROXY_ERROR_HANDLER = (
   sendError(req, res, 502);
 };
 
-/** 
+/**
  * An in-memory build cache for Snowpack. Responsible for coordinating
  * different builds (ex: SSR, non-SSR) to get/set individually but clear
  * both at once.
@@ -119,7 +119,9 @@ class InMemoryBuildCache {
     return this.getCache(isSSR).has(fileLoc);
   }
   delete(fileLoc: string) {
-    return this.getCache(true).delete(fileLoc) && this.getCache(false).delete(fileLoc);
+    const wasCachedSSR = this.getCache(true).delete(fileLoc);
+    const wasCachedWeb = this.getCache(false).delete(fileLoc);
+    return wasCachedSSR || wasCachedWeb;
   }
   clear() {
     this.getCache(true).clear();
@@ -967,7 +969,7 @@ ${err}`);
   const chokidar = await import('chokidar');
 
   // Watch src files
-  async function onWatchEvent(fileLoc) {
+  async function onWatchEvent(fileLoc: string) {
     logger.info(colors.cyan('File changed...'));
     handleHmrUpdate(fileLoc);
     inMemoryBuildCache.delete(fileLoc);
