@@ -13,6 +13,9 @@ module.exports = function plugin(snowpackConfig, pluginOptions = {}) {
   const isDev = process.env.NODE_ENV !== 'production';
   const useSourceMaps = snowpackConfig.buildOptions.sourceMaps;
 
+  // Map tracking components that have CSS
+  const componentHasCss = {};
+
   // Support importing Svelte files when you install dependencies.
   snowpackConfig.installOptions.rollup.plugins.push(
     svelteRollupPlugin({
@@ -136,11 +139,18 @@ module.exports = function plugin(snowpackConfig, pluginOptions = {}) {
         });
       }
 
-      if (!finalCompileOptions.css && css && css.code) {
-        output['.css'] = {
-          code: css.code,
-          map: useSourceMaps ? css.map : undefined,
-        };
+      // NOTE we need to emit empty CSS if the component previously had CSS,
+      // otherwise the stale CSS will not be removed
+      if (!finalCompileOptions.css) {
+        const hasCss = css.code != null;
+        const previouslyHadCss = componentHasCss[filePath];
+        componentHasCss[filePath] = hasCss;
+        if (hasCss || previouslyHadCss) {
+          output['.css'] = {
+            code: css.code || '/* empty */',
+            map: useSourceMaps ? css && css.map : undefined,
+          };
+        }
       }
       return output;
     },
