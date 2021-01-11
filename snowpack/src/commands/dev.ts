@@ -96,6 +96,11 @@ interface FoundFile {
   isResolve: boolean;
 }
 
+interface HmrUpdate {
+  url: string;
+  bubbled: boolean;
+}
+
 const FILE_BUILD_RESULT_ERROR = `Build Result Error: There was a problem with a file build result.`;
 
 /**
@@ -612,7 +617,8 @@ export async function startDevServer(commandOptions: CommandOptions): Promise<Sn
 
     if (!isRoute && !isProxyModule) {
       const expectedUrl = getUrlForFile(foundFile.fileLoc, config);
-      if (expectedUrl !== reqUrl) {
+      const originalReqUrl = reqUrl.includes('?mtime=') ? reqUrl.split('?')[0] : reqUrl;
+      if (expectedUrl !== originalReqUrl) {
         logger.warn(`Bad Request: "${reqUrl}" should be requested as "${expectedUrl}".`);
         throw new NotFoundError([foundFile.fileLoc]);
       }
@@ -1212,14 +1218,20 @@ export async function startDevServer(commandOptions: CommandOptions): Promise<Sn
   // Live Reload + File System Watching
   let isLiveReloadPaused = false;
 
-  function updateOrBubble(url: string, visited: Set<string>) {
+  function updateOrBubble(url: string) {
+    const visited = new Set<string>();
+    const updates = new Map();
+    _updateOrBubble(url, visited, updates);
+    return updates.values();
+  }
+  function _updateOrBubble(url: string, visited: Set<string>, updates: Map<string, HmrUpdate>) {
     if (visited.has(url)) {
       return;
     }
     const node = hmrEngine.getEntry(url);
-    const isBubbled = visited.size > 0;
     if (node && node.isHmrEnabled) {
-      hmrEngine.broadcastMessage({type: 'update', url, bubbled: isBubbled});
+      const bubbled = visited.size > 0;
+      updates.set(url, {url, bubbled});
     }
     visited.add(url);
     if (node && node.isHmrAccepted) {
@@ -1227,7 +1239,7 @@ export async function startDevServer(commandOptions: CommandOptions): Promise<Sn
     } else if (node && node.dependents.size > 0) {
       node.dependents.forEach((dep) => {
         hmrEngine.markEntryForReplacement(node, true);
-        updateOrBubble(dep, visited);
+        _updateOrBubble(dep, visited, updates);
       });
     } else {
       // We've reached the top, trigger a full page refresh
@@ -1265,7 +1277,11 @@ export async function startDevServer(commandOptions: CommandOptions): Promise<Sn
 
     // If the changed file exists on the page, trigger a new HMR update.
     if (hmrEngine.getEntry(updatedUrl)) {
-      updateOrBubble(updatedUrl, new Set());
+      const updates = updateOrBubble(updatedUrl);
+      const updateID = Date.now();
+      for (const {url, bubbled} of updates) {
+        hmrEngine.broadcastMessage({type: 'update', url, bubbled, updateID});
+      }
       return;
     }
 

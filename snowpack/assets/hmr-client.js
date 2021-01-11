@@ -151,7 +151,7 @@ async function runCssStyleAccept({url: id}) {
 }
 
 /** Called when a new module is loaded, to pass the updated module to the "active" module */
-async function runJsModuleAccept({url: id, bubbled}) {
+async function runJsModuleAccept({url: id, bubbled, updateID}) {
   const state = REGISTERED_MODULES[id];
   if (!state) {
     return false;
@@ -160,7 +160,6 @@ async function runJsModuleAccept({url: id, bubbled}) {
     return false;
   }
   const acceptCallbacks = state.acceptCallbacks;
-  const updateID = Date.now();
   for (const {deps, callback: acceptCallback} of acceptCallbacks) {
     const [module, ...depModules] = await Promise.all([
       import(id + `?mtime=${updateID}`),
