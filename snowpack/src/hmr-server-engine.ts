@@ -52,6 +52,7 @@ export class EsmHmrEngine {
   private currentBatchTimeout: NodeJS.Timer | null = null;
   private cachedConnectErrors: Set<HMRMessage> = new Set();
   readonly port: number = 0;
+  private remote: HmrRemoteProcedures;
 
   constructor(options: EsmHmrEngineOptions) {
     this.port = options.port || DEFAULT_PORT;
@@ -61,6 +62,8 @@ export class EsmHmrEngine {
     if (options.delay) {
       this.delay = options.delay;
     }
+
+    this.remote = new HmrRemoteProcedures(this);
 
     if (options.server) {
       options.server.on('upgrade', (req, socket, head) => {
@@ -88,12 +91,35 @@ export class EsmHmrEngine {
   registerListener(client: WebSocket) {
     client.on('message', (data) => {
       const message = JSON.parse(data.toString());
+
       if (message.type === 'hotAccept') {
         const entry = this.getEntry(message.id, true) as Dependency;
         entry.isHmrAccepted = true;
         entry.isHmrEnabled = true;
       }
+
+      if (message.type === 'call') {
+        Promise.resolve(this.remote[message.name](...message.args))
+          .then((result) => {
+            send({
+              type: 'return',
+              id: message.id,
+              result,
+            });
+          })
+          .catch((error) => {
+            send({
+              type: 'return',
+              id: message.id,
+              error,
+            });
+          });
+      }
     });
+
+    function send(data: object) {
+      client.send(JSON.stringify(data));
+    }
   }
 
   createEntry(sourceUrl: string) {
@@ -240,5 +266,22 @@ export class EsmHmrEngine {
     for (const client of this.clients) {
       this.disconnectClient(client);
     }
+  }
+}
+
+class HmrRemoteProcedures {
+  engine: EsmHmrEngine;
+
+  constructor(engine: EsmHmrEngine) {
+    this.engine = engine;
+  }
+
+  getImportUrls(sourceUrls: string[]) {
+    return sourceUrls.map((url: string) => {
+      const id = url.split('?')[0];
+      const entry = this.engine.getEntry(id);
+      if (!entry) return url;
+      return `${id}?mtime=${entry.updateId}`;
+    });
   }
 }

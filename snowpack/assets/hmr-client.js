@@ -5,6 +5,9 @@
 
 const isWindowDefined = typeof window !== 'undefined';
 
+let lastRpcId = 0;
+const rpcCalls = new Map();
+
 function log(...args) {
   console.log('[ESM-HMR]', ...args);
 }
@@ -161,11 +164,7 @@ async function runJsModuleAccept({url: id, bubbled, updateId}) {
   }
   const acceptCallbacks = state.acceptCallbacks;
   for (const {deps, callback: acceptCallback} of acceptCallbacks) {
-    const [module, ...depModules] = await Promise.all([
-      import(id + `?mtime=${updateId}`),
-      // FIXME we can't know the correct updateId for dependencies at this point
-      ...deps.map((d) => import(d + `?mtime=${updateId}`)),
-    ]);
+    const [module, ...depModules] = await importLastVersions([id, ...deps]);
     acceptCallback({module, bubbled, deps: depModules});
   }
   return true;
@@ -186,6 +185,30 @@ async function runModuleDispose(id) {
   disposeCallbacks.map((callback) => callback());
   return true;
 }
+
+async function getImportUrls(sourceUrls) {
+  if (sourceUrls.length < 1) return sourceUrls;
+  return remoteCall('getImportUrls', sourceUrls);
+}
+
+async function importLastVersions(ids) {
+  const urls = await getImportUrls(ids);
+  return Promise.all(urls.map((url) => import(url)));
+}
+
+async function remoteCall(name, ...args) {
+  const id = ++lastRpcId;
+  return new Promise((resolve, reject) => {
+    rpcCalls.set(id, {resolve, reject});
+    sendSocketMessage({
+      type: 'call',
+      id,
+      name,
+      args,
+    });
+  });
+}
+
 socket.addEventListener('message', ({data: _data}) => {
   if (!_data) {
     return;
@@ -229,6 +252,15 @@ socket.addEventListener('message', ({data: _data}) => {
         }
       });
     return;
+  }
+  if (data.type === 'return') {
+    const {resolve, reject} = rpcCalls.get(data.id);
+    rpcCalls.delete(data.id);
+    if (data.error) {
+      reject(data.result);
+    } else {
+      resolve(data.result);
+    }
   }
   log('message: unknown', data);
 });
