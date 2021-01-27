@@ -1188,9 +1188,9 @@ export async function startServer(commandOptions: CommandOptions): Promise<Snowp
     })
     .listen(port);
 
-  const {hmrDelay} = config.devOptions;
+  const {hmrDelay, hmrVerbose} = config.devOptions;
   const hmrEngineOptions = Object.assign(
-    {delay: hmrDelay},
+    {delay: hmrDelay, verbose: hmrVerbose},
     config.devOptions.hmrPort ? {port: config.devOptions.hmrPort} : {server, port},
   );
   const hmrEngine = new EsmHmrEngine(hmrEngineOptions);

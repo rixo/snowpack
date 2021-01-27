@@ -263,6 +263,7 @@ export interface SnowpackConfig {
     hmrDelay: number;
     hmrPort: number | undefined;
     hmrErrorOverlay: boolean;
+    hmrVerbose: boolean;
   };
   buildOptions: {
     out: string;

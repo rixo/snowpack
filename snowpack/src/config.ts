@@ -40,6 +40,7 @@ const DEFAULT_CONFIG: SnowpackUserConfig = {
     hmrDelay: 0,
     hmrPort: undefined,
     hmrErrorOverlay: true,
+    hmrVerbose: false,
   },
   buildOptions: {
     out: 'build',
@@ -112,6 +113,7 @@ const configSchema = {
         hmrDelay: {type: 'number'},
         hmrPort: {type: 'number'},
         hmrErrorOverlay: {type: 'boolean'},
+        hmrVerbose: {type: 'boolean'},
       },
     },
     packageOptions: {

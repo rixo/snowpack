@@ -13,6 +13,7 @@ interface Dependency {
 }
 
 type HMRMessage =
+  | {type: 'config', config: {verbose: boolean}}
   | {type: 'reload'}
   | {type: 'update'; url: string; bubbled: boolean}
   | {
@@ -28,6 +29,7 @@ const DEFAULT_PORT = 12321;
 
 interface EsmHmrEngineOptionsCommon {
   delay?: number;
+  verbose?: boolean;
 }
 
 type EsmHmrEngineOptions = (
@@ -75,11 +77,12 @@ export class EsmHmrEngine {
     wss.on('connection', (client) => {
       this.connectClient(client);
       this.registerListener(client);
+      this.dispatchMessage([{type: 'config', config: { verbose: !!options.verbose }}])
       if (this.cachedConnectErrors.size > 0) {
         this.dispatchMessage(Array.from(this.cachedConnectErrors), client);
       }
     });
-    wss.on('close', (client) => {
+    wss.on('close', (client: WebSocket) => {
       this.disconnectClient(client);
     });
   }
@@ -210,7 +213,7 @@ export class EsmHmrEngine {
     }
     const clientRecipientList = singleClient ? [singleClient] : this.clients;
     let singleSummaryMessage = messageBatch.find((message) => message.type === 'reload') || null;
-    clientRecipientList.forEach((client) => {
+    clientRecipientList.forEach((client: WebSocket) => {
       if (client.readyState === WebSocket.OPEN) {
         if (singleSummaryMessage) {
           client.send(JSON.stringify(singleSummaryMessage));

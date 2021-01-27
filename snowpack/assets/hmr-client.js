@@ -5,9 +5,20 @@
 
 const isWindowDefined = typeof window !== 'undefined';
 
+const config = {verbose: false};
+
+const logPrefix = '[ESM-HMR]';
+
+const updateLogDebounce = window.HMR_UPDATE_LOG_DEBOUNCE || 50
+
 function log(...args) {
-  console.log('[ESM-HMR]', ...args);
+  console.log(logPrefix, ...args);
 }
+
+function logError(...args) {
+  console.error(logPrefix, ...args);
+}
+
 function reload() {
   if (!isWindowDefined) {
     return;
@@ -186,36 +197,72 @@ async function runModuleDispose(id) {
   disposeCallbacks.map((callback) => callback());
   return true;
 }
+
+let activeUpdates = 0;
+let activeUpdateTimeout;
+let activeUpdatesErrors = 0;
+
+const beginUpdate = () => {
+  activeUpdates++;
+  if (activeUpdates === 1) {
+    log('updating...');
+  }
+};
+
+const finishUpdate = (success) => {
+  activeUpdates--;
+  if (!success) activeUpdatesErrors++;
+  clearTimeout(activeUpdateTimeout);
+  activeUpdateTimeout = setTimeout(() => {
+    if (activeUpdates === 0) {
+      if (activeUpdatesErrors > 0) {
+        const plural = activeUpdatesErrors === 1 ? '' : 's'
+        log(`update completed with ${activeUpdatesErrors} error${plural}`);
+      } else {
+        log('up to date');
+      }
+      activeUpdatesErrors = false;
+    }
+  }, updateLogDebounce);
+};
+
 socket.addEventListener('message', ({data: _data}) => {
   if (!_data) {
     return;
   }
   const data = JSON.parse(_data);
+  if (data.type === 'config') {
+    Object.assign(config, data.config)
+    log('listening for file changes...');
+    return;
+  }
   if (data.type === 'reload') {
     log('message: reload');
     reload();
     return;
   }
   if (data.type === 'error') {
-    console.error(
-      `[ESM-HMR] ${data.fileLoc ? data.fileLoc + '\n' : ''}`,
-      data.title + '\n' + data.errorMessage,
-    );
+    logError(data.fileLoc ? data.fileLoc + '\n' : '', data.title + '\n' + data.errorMessage);
     createNewErrorOverlay(data);
     return;
   }
   if (data.type === 'update') {
-    log('message: update', data);
+    beginUpdate();
+    if (config.verbose) {
+      log('message: update', data);
+    }
     (data.url.endsWith('.css') ? runCssStyleAccept(data) : runJsModuleAccept(data))
       .then((ok) => {
         if (ok) {
+          finishUpdate(true);
           clearErrorOverlay();
         } else {
+          finishUpdate(false);
           reload();
         }
       })
       .catch((err) => {
-        console.error('[ESM-HMR] Hot Update Error', err);
+        logError('Hot Update Error', err);
         // A failed import gives a TypeError, but invalid ESM imports/exports give a SyntaxError.
         // Failed build results already get reported via a better WebSocket update.
         // We only want to report invalid code like a bad import that doesn't exist.
@@ -227,12 +274,12 @@ socket.addEventListener('message', ({data: _data}) => {
             errorStackTrace: err.stack,
           });
         }
+        finishUpdate(false);
       });
     return;
   }
   log('message: unknown', data);
 });
-log('listening for file changes...');
 
 /** Runtime error reporting: If a runtime error occurs, show it in an overlay. */
 isWindowDefined && window.addEventListener('error', function (event) {
