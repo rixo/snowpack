@@ -11,11 +11,13 @@ interface Dependency {
   needsReplacement: boolean;
   needsReplacementCount: number;
   updateId?: string;
+  orphan: boolean;
 }
 
 type HMRMessage =
   | {type: 'reload'}
   | {type: 'update'; url: string; bubbled: boolean; updateId?: string}
+  | {type: 'unlink'; urls: string[]}
   | {
       type: 'error';
       title: string;
@@ -46,6 +48,8 @@ type EsmHmrEngineOptions = (
 export class EsmHmrEngine {
   clients: Set<WebSocket> = new Set();
   dependencyTree = new Map<string, Dependency>();
+  private orphans = new Set<string>();
+  private rejoined = new Set<string>();
 
   private delay: number = 0;
   private currentBatch: HMRMessage[] = [];
@@ -105,6 +109,7 @@ export class EsmHmrEngine {
       isHmrEnabled: false,
       isHmrAccepted: false,
       updateId: undefined,
+      orphan: false,
     };
     this.dependencyTree.set(sourceUrl, newEntry);
     return newEntry;
@@ -135,18 +140,55 @@ export class EsmHmrEngine {
   }
 
   removeRelationship(sourceUrl: string, importUrl: string) {
-    let importResult = this.getEntry(importUrl);
-    importResult && importResult.dependents.delete(sourceUrl);
+    const importResult = this.getEntry(importUrl);
+    if (importResult) {
+      const sizeBefore = importResult.dependents.size;
+      importResult.dependents.delete(sourceUrl);
+      if (sizeBefore > 0 && importResult.dependents.size === 0) {
+        importResult.orphan = true;
+        this.rejoined.delete(importUrl);
+        this.orphans.add(importUrl);
+      }
+    }
     const sourceResult = this.getEntry(sourceUrl);
     sourceResult && sourceResult.dependencies.delete(importUrl);
   }
 
   addRelationship(sourceUrl: string, importUrl: string) {
     if (importUrl !== sourceUrl) {
-      let importResult = this.getEntry(importUrl, true)!;
+      const importResult = this.getEntry(importUrl, true)!;
+      const sizeBefore = importResult.dependents.size;
       importResult.dependents.add(sourceUrl);
       const sourceResult = this.getEntry(sourceUrl, true)!;
       sourceResult.dependencies.add(importUrl);
+      if (sizeBefore === 0 && importResult.orphan) {
+        importResult.orphan = false;
+        // NOTE we need a new update id for the the module to be rerun in the
+        // browser, which is needed for current CSS proxies implementation
+        importResult.updateId = sourceResult.updateId;
+        this.orphans.delete(importUrl);
+        this.rejoined.add(importUrl);
+      }
+    }
+  }
+
+  flushOrphans() {
+    const orphans = [...this.orphans];
+    const rejoined = [...this.rejoined];
+    this.orphans.clear();
+    this.rejoined.clear();
+    if (orphans.length > 0) {
+      this.broadcastMessage({type: 'unlink', urls: orphans});
+    }
+    for (const url of rejoined) {
+      const entry = this.getEntry(url);
+      if (!entry) continue;
+      this.broadcastMessage({
+        type: 'update',
+        url,
+        updateId: entry.updateId,
+        bubbled: false,
+      });
     }
   }
 

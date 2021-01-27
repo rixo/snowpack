@@ -100,6 +100,7 @@ interface FoundFile {
 interface HmrUpdate {
   url: string;
   bubbled: boolean;
+  orphan?: boolean;
   updateId: string;
 }
 
@@ -836,6 +837,8 @@ export async function startServer(commandOptions: CommandOptions): Promise<Snowp
         });
 
         hmrEngine.setEntry(originalReqPath, resolvedImports, isHmrEnabled);
+
+        hmrEngine.flushOrphans();
       }
 
       wrappedResponse = code;
@@ -1238,7 +1241,9 @@ export async function startServer(commandOptions: CommandOptions): Promise<Snowp
     if (node) {
       node.updateId = updateId;
     }
-    if (node && node.isHmrEnabled) {
+    // NOTE don't update orphan nodes (e.g. in the case of CSS, that would
+    // reapply some stylesheet that is not currently included in the app)
+    if (node && node.isHmrEnabled && !node.orphan) {
       const bubbled = visited.size > 0;
       updates.set(url, {url, bubbled, updateId});
     }

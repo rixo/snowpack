@@ -150,8 +150,14 @@ async function runCssStyleAccept({url: id}) {
   return true;
 }
 
+/** Returns the url with the mtime parameter, or raw if updateId is undefined */
+function withUpdateId(url, updateId) {
+  if (updateId == null) return url;
+  return `${url}?mtime=${updateId}`;
+}
+
 /** Called when a new module is loaded, to pass the updated module to the "active" module */
-async function runJsModuleAccept({url: id, bubbled, updateId}) {
+async function runJsModuleAccept({url: id, updateId, bubbled}) {
   const state = REGISTERED_MODULES[id];
   if (!state) {
     return false;
@@ -162,9 +168,9 @@ async function runJsModuleAccept({url: id, bubbled, updateId}) {
   const acceptCallbacks = state.acceptCallbacks;
   for (const {deps, callback: acceptCallback} of acceptCallbacks) {
     const [module, ...depModules] = await Promise.all([
-      import(id + `?mtime=${updateId}`),
+      import(withUpdateId(id, updateId)),
       // FIXME we can't know the correct updateId for dependencies at this point
-      ...deps.map((d) => import(d + `?mtime=${updateId}`)),
+      ...deps.map((d) => import(withUpdateId(d, updateId))),
     ]);
     acceptCallback({module, bubbled, deps: depModules});
   }
@@ -228,6 +234,13 @@ socket.addEventListener('message', ({data: _data}) => {
           });
         }
       });
+    return;
+  }
+  if (data.type === 'unlink') {
+    log('message: unlink', data);
+    for (const url of data.urls) {
+      runModuleDispose(url);
+    }
     return;
   }
   log('message: unknown', data);
